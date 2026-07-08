@@ -7,6 +7,11 @@
 // This runtime-path block applies active F_RF coefficients to the Radio Frequency chain outputs.
 // It receives the digital-precoder output and produces antenna-domain samples.
 // The current body is a placeholder until the runtime analog precoder datapath is implemented.
+//
+// Interface notes:
+//   - This block is in the runtime data path, not the coefficient-update path.
+//   - f_rf_*_flat comes from coeff_ram after a completed update pass.
+//   - Final implementation will compute x = F_RF * u.
 // -----------------------------------------------------------------------------
 
 module analog_precoder_apply #(
@@ -17,6 +22,8 @@ module analog_precoder_apply #(
     input  logic [NT*NRF*W-1:0] f_rf_re_flat, input logic [NT*NRF*W-1:0] f_rf_im_flat,
     output logic [NT*W-1:0] x_re_flat, output logic [NT*W-1:0] x_im_flat
 );
+    // Placeholder output keeps antenna samples deterministic until the runtime
+    // analog matrix multiply is implemented.
     assign x_re_flat = {NT*W{1'b0}};
     assign x_im_flat = {NT*W{1'b0}};
 endmodule

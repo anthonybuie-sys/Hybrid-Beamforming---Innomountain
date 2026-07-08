@@ -7,6 +7,11 @@
 // This block receives the Least Squares channel estimate and produces the filtered channel estimate used by the partial SVD engine.
 // It is scheduled after srs_ls_estimator and before partial_svd_engine in the coefficient-update path.
 // The current body is a placeholder pass-through until the DFT-MMSE datapath is implemented.
+//
+// Interface notes:
+//   - start is pulsed after LS estimation completes.
+//   - done is asserted for one cycle when h_est_* is valid.
+//   - Final logic will add DFT-domain filtering and MMSE weighting.
 // -----------------------------------------------------------------------------
 
 module dft_mmse_estimator #(
@@ -18,7 +23,18 @@ module dft_mmse_estimator #(
     output logic done
 );
     always_ff @(posedge clk or posedge rst) begin
-        if (rst) begin done <= 1'b0; h_est_re_flat <= 0; h_est_im_flat <= 0; end
-        else begin done <= start; if (start) begin h_est_re_flat <= h_ls_re_flat; h_est_im_flat <= h_ls_im_flat; end end
+        if (rst) begin
+            done          <= 1'b0;
+            h_est_re_flat <= 0;
+            h_est_im_flat <= 0;
+        end else begin
+            // Functional baseline forwards the LS estimate. The handshake and
+            // storage interface are stable for the future DFT/MMSE datapath.
+            done <= start;
+            if (start) begin
+                h_est_re_flat <= h_ls_re_flat;
+                h_est_im_flat <= h_ls_im_flat;
+            end
+        end
     end
 endmodule

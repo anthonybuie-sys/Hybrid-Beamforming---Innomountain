@@ -7,6 +7,11 @@
 // This block tells the PE-AltMin controller whether another iteration is required.
 // For the current functional baseline it compares the current iteration count against the configured target.
 // A later objective-based convergence calculation can replace the internal logic without changing the controller handshake.
+//
+// Protocol:
+//   - start captures the convergence decision for the iteration that just ran.
+//   - done is delayed by CHECK_LAT through pe_altmin_latency_stage.
+//   - converged remains stable until the next start pulse.
 // -----------------------------------------------------------------------------
 
 module frf_convergence_check #(
@@ -22,6 +27,8 @@ module frf_convergence_check #(
     output logic done
 );
 
+    // Separate timer keeps the controller timing shape stable while the actual
+    // objective-based convergence calculation is still future work.
     pe_altmin_latency_stage #(.LATENCY(CHECK_LAT)) u_timer (
         .clk(clk), .rst(rst), .start(start), .busy(busy), .done(done)
     );
@@ -30,6 +37,8 @@ module frf_convergence_check #(
         if (rst)
             converged <= 1'b0;
         else if (start)
+            // Baseline convergence rule: stop when the next completed iteration
+            // reaches the configured cold-start or warm-start target.
             converged <= (iter_count + 8'd1 >= iter_target);
     end
 

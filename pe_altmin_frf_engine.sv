@@ -16,6 +16,11 @@
 // This file contains the controller and wires together the named datapath
 // blocks. The sub-blocks currently expose realistic handshakes and latency
 // knobs; their numeric MAC/SVD/CORDIC implementations can be filled in next.
+//
+// Interface notes:
+//   - start launches one complete PE-AltMin coefficient update.
+//   - warm_start selects WARM_ITERS instead of COLD_ITERS.
+//   - done pulses after the final iteration and phase projection complete.
 // -----------------------------------------------------------------------------
 
 module pe_altmin_frf_engine #(
@@ -71,11 +76,15 @@ module pe_altmin_frf_engine #(
 
     state_t state;
 
+    // One-cycle start strobes for the internal pipeline stages. The controller
+    // asserts exactly one when moving from one stage to the next.
     logic start_a, start_svd, start_m, start_phase, start_check;
     logic a_done, svd_done, m_done, phase_done, check_done;
     logic converged;
     logic [7:0] iter_target;
 
+    // Working F_RF is updated after each phase projection and reused as the seed
+    // for the next iteration.
     logic [NT*NRF*W-1:0] f_rf_work_re_flat;
     logic [NT*NRF*W-1:0] f_rf_work_im_flat;
     logic [NT*NRF*W-1:0] f_rf_next_re_flat;
@@ -88,6 +97,7 @@ module pe_altmin_frf_engine #(
     logic [NT*NRF*W-1:0] m_re_flat;
     logic [NT*NRF*W-1:0] m_im_flat;
 
+    // Stage 1: build A = F_opt^H * F_RF_work.
     frf_a_builder #(
         .NT(NT), .NS(NS), .NRF(NRF), .W(W),
         .FRAC(FRAC),
@@ -100,8 +110,9 @@ module pe_altmin_frf_engine #(
         .busy(), .done(a_done)
     );
 
+    // Stage 2: compute Procrustes update F_DD = V*U^H.
     svd8_procrustes_stage #(
-        .NS(NS), .NRF(NRF), .W(W), .SVD8_LAT(SVD8_LAT)
+        .NS(NS), .NRF(NRF), .W(W), .FRAC(FRAC), .SVD8_LAT(SVD8_LAT)
     ) u_svd8 (
         .clk(clk), .rst(rst), .start(start_svd),
         .a_re_flat(a_re_flat), .a_im_flat(a_im_flat),
@@ -109,6 +120,7 @@ module pe_altmin_frf_engine #(
         .busy(), .done(svd_done)
     );
 
+    // Stage 3: build M = F_opt * F_DD^H.
     frf_m_builder #(
         .NT(NT), .NS(NS), .NRF(NRF), .W(W),
         .FRAC(FRAC),
@@ -121,6 +133,7 @@ module pe_altmin_frf_engine #(
         .busy(), .done(m_done)
     );
 
+    // Stage 4: project M entries onto the unit circle to form the next F_RF.
     frf_phase_projector #(
         .NT(NT), .NRF(NRF), .W(W),
         .FRAC(FRAC),
@@ -132,6 +145,7 @@ module pe_altmin_frf_engine #(
         .busy(), .done(phase_done)
     );
 
+    // Stage 5: decide whether the controller should run another iteration.
     frf_convergence_check #(
         .CHECK_LAT(CHECK_LAT)
     ) u_check (
@@ -141,6 +155,8 @@ module pe_altmin_frf_engine #(
         .busy(), .done(check_done)
     );
 
+    // Main PE-AltMin stage scheduler. The state order mirrors the MATLAB loop:
+    // A build -> Procrustes -> M build -> phase projection -> convergence check.
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
             state        <= ST_IDLE;
@@ -160,6 +176,8 @@ module pe_altmin_frf_engine #(
             busy         <= 1'b0;
             done         <= 1'b0;
         end else begin
+            // Default all sub-stage commands low; states below emit one-cycle
+            // pulses when a sub-stage has completed.
             done        <= 1'b0;
             start_a     <= 1'b0;
             start_svd   <= 1'b0;
@@ -175,6 +193,9 @@ module pe_altmin_frf_engine #(
                     busy        <= 1'b0;
                     stage_id    <= ST_IDLE;
                     if (start) begin
+                        // Seed the working RF precoder. The current cold-start
+                        // path still uses the provided previous matrix; a later
+                        // seed generator can replace this behavior.
                         busy        <= 1'b1;
                         cycle_count <= 32'd0;
                         iter_count  <= 8'd0;
@@ -219,6 +240,9 @@ module pe_altmin_frf_engine #(
 
                 ST_PHASE: begin
                     if (phase_done) begin
+                        // Phase projection produced the next F_RF estimate. It
+                        // becomes both the external output and the next-iteration
+                        // working seed.
                         f_rf_work_re_flat <= f_rf_next_re_flat;
                         f_rf_work_im_flat <= f_rf_next_im_flat;
                         f_rf_re_flat      <= f_rf_next_re_flat;
@@ -231,6 +255,8 @@ module pe_altmin_frf_engine #(
 
                 ST_CHECK: begin
                     if (check_done) begin
+                        // iter_count records completed iterations. The
+                        // convergence block decides if this was the final one.
                         iter_count <= iter_count + 8'd1;
                         if (converged) begin
                             state    <= ST_DONE;

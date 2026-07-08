@@ -7,6 +7,11 @@
 // This wrapper adapts the top-level coefficient-update path to pe_altmin_frf_engine.
 // It passes F_opt and the previous active F_RF into the Radio Frequency precoder update engine and returns the updated F_RF.
 // The wrapper also carries the warm-start control from coefficient memory validity into the PE-AltMin engine.
+//
+// Integration notes:
+//   - This module is the top-level coefficient path's view of PE-AltMin.
+//   - pe_altmin_frf_engine contains the detailed iteration scheduler.
+//   - Warm start is asserted after coeff_ram has a valid previous F_RF.
 // -----------------------------------------------------------------------------
 
 module pe_altmin_engine #(
@@ -23,6 +28,8 @@ module pe_altmin_engine #(
     logic [2:0]  stage_id_unused;
     logic        busy_unused;
 
+    // Keep the wrapper thin so the top-level architecture does not depend on
+    // internal PE-AltMin status signals such as stage_id and cycle_count.
     pe_altmin_frf_engine #(
         .NT(NT), .NS(NS), .NRF(NRF), .W(W),
         .FRAC(FRAC),

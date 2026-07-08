@@ -7,6 +7,16 @@
 // This block computes A = F_opt^H * F_RF for the PE-AltMin loop.
 // It receives F_opt from the partial SVD path and the current F_RF seed from the PE-AltMin controller.
 // Its A matrix output feeds the small SVD / Procrustes stage.
+//
+// Matrix layout:
+//   - F_opt is flattened as NT rows by NS columns.
+//   - F_RF is flattened as NT rows by NRF columns.
+//   - A is flattened as NS rows by NRF columns.
+//
+// Arithmetic:
+//   - Computes conj(F_opt[n, s]) * F_RF[n, r].
+//   - Accumulates across transmit antenna index n.
+//   - Rounds/saturates from expanded accumulator width back to W bits.
 // -----------------------------------------------------------------------------
 
 module frf_a_builder #(
@@ -31,6 +41,8 @@ module frf_a_builder #(
     output logic done
 );
 
+    // Product width is 2*W. Extra guard bits cover the NT-term reduction and
+    // leave margin for signed accumulation before rounding.
     localparam int unsigned ACC_W = (2*W) + $clog2(NT + 1) + 2;
 
     typedef enum logic [1:0] {
@@ -53,6 +65,8 @@ module frf_a_builder #(
     logic signed [ACC_W-1:0] next_acc_re;
     logic signed [ACC_W-1:0] next_acc_im;
 
+    // Convert the accumulator back to the external fixed-point format. This is
+    // the common rounding/saturation point for each completed A element.
     function automatic logic signed [W-1:0] sat_round(input logic signed [ACC_W-1:0] value);
         logic signed [ACC_W-1:0] rounded;
         logic signed [ACC_W-1:0] shifted;
@@ -85,6 +99,8 @@ module frf_a_builder #(
         end
     endfunction
 
+    // Lane combiner: each lane handles one transmit-antenna term in the current
+    // reduction chunk. MAC_LANES controls functional parallelism.
     always @* begin
         lane_sum_re = '0;
         lane_sum_im = '0;
@@ -111,7 +127,7 @@ module frf_a_builder #(
                 rf_re  = f_rf_re_flat[f_rf_index*W +: W];
                 rf_im  = f_rf_im_flat[f_rf_index*W +: W];
 
-                // conj(F_opt) * F_RF
+                // Complex product: conj(F_opt) * F_RF.
                 prod_re = (opt_re * rf_re) + (opt_im * rf_im);
                 prod_im = (opt_re * rf_im) - (opt_im * rf_re);
 
@@ -124,6 +140,10 @@ module frf_a_builder #(
     assign next_acc_re = acc_re + lane_sum_re;
     assign next_acc_im = acc_im + lane_sum_im;
 
+    // Scheduler:
+    //   rf_idx selects the RF chain column of F_RF/A.
+    //   ns_idx selects the data-stream row of A.
+    //   n_base walks the transmit-antenna reduction in MAC_LANES chunks.
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
             state     <= ST_IDLE;
@@ -159,6 +179,8 @@ module frf_a_builder #(
 
                 ST_RUN: begin
                     if (n_base + MAC_LANES[31:0] >= NT[31:0]) begin
+                        // Last reduction chunk for this A element. Commit the
+                        // rounded result and advance to the next output element.
                         a_re_flat[((ns_idx * NRF) + rf_idx)*W +: W] <= sat_round(next_acc_re);
                         a_im_flat[((ns_idx * NRF) + rf_idx)*W +: W] <= sat_round(next_acc_im);
                         acc_re <= '0;
@@ -176,6 +198,7 @@ module frf_a_builder #(
                             end
                         end
                     end else begin
+                        // More transmit-antenna terms remain for this A element.
                         acc_re <= next_acc_re;
                         acc_im <= next_acc_im;
                         n_base <= n_base + MAC_LANES[31:0];

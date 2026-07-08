@@ -7,6 +7,11 @@
 // Placeholder blocks such as the Procrustes stage and convergence checker use this module to model a bounded operation latency.
 // It accepts a single-cycle start pulse, holds busy while counting, and raises done for one cycle at completion.
 // This is useful while functional datapaths are being filled in behind stable interfaces.
+//
+// Protocol:
+//   - start is sampled only when busy is low.
+//   - busy remains high while the internal counter is active.
+//   - done is a one-cycle pulse at completion.
 // -----------------------------------------------------------------------------
 
 module pe_altmin_latency_stage #(
@@ -21,6 +26,8 @@ module pe_altmin_latency_stage #(
 
     logic [31:0] count;
 
+    // Generic latency counter. This module intentionally has no datapath; it
+    // only models operation duration behind a stable start/busy/done handshake.
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
             count <= 32'd0;
@@ -30,6 +37,8 @@ module pe_altmin_latency_stage #(
             done <= 1'b0;
 
             if (start && !busy) begin
+                // LATENCY==1 completes immediately, which keeps single-cycle
+                // placeholder stages easy to represent.
                 count <= 32'd1;
                 if (LATENCY <= 1) begin
                     busy <= 1'b0;

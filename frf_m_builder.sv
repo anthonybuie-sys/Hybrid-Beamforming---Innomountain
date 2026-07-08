@@ -7,6 +7,16 @@
 // This block computes M = F_opt * F_DD^H after the Procrustes stage completes.
 // It receives F_opt and F_DD, then produces M for the phase projection engine.
 // The output M matrix is projected onto the unit circle to form the next F_RF.
+//
+// Matrix layout:
+//   - F_opt is flattened as NT rows by NS columns.
+//   - F_DD is flattened as NRF rows by NS columns.
+//   - M is flattened as NT rows by NRF columns.
+//
+// Arithmetic:
+//   - Computes F_opt[n, s] * conj(F_DD[r, s]).
+//   - Accumulates across data stream index s.
+//   - Rounds/saturates from expanded accumulator width back to W bits.
 // -----------------------------------------------------------------------------
 
 module frf_m_builder #(
@@ -31,6 +41,7 @@ module frf_m_builder #(
     output logic done
 );
 
+    // Product width is 2*W. Extra guard bits cover the NS-term reduction.
     localparam int unsigned ACC_W = (2*W) + $clog2(NS + 1) + 2;
 
     typedef enum logic [1:0] {
@@ -53,6 +64,7 @@ module frf_m_builder #(
     logic signed [ACC_W-1:0] next_acc_re;
     logic signed [ACC_W-1:0] next_acc_im;
 
+    // Convert the completed reduction back to the external fixed-point format.
     function automatic logic signed [W-1:0] sat_round(input logic signed [ACC_W-1:0] value);
         logic signed [ACC_W-1:0] rounded;
         logic signed [ACC_W-1:0] shifted;
@@ -85,6 +97,8 @@ module frf_m_builder #(
         end
     endfunction
 
+    // Lane combiner: each lane handles one stream term in the current reduction
+    // chunk. MAC_LANES can later be mapped to DSP parallelism.
     always @* begin
         lane_sum_re = '0;
         lane_sum_im = '0;
@@ -111,7 +125,7 @@ module frf_m_builder #(
                 dd_re  = f_dd_re_flat[f_dd_index*W +: W];
                 dd_im  = f_dd_im_flat[f_dd_index*W +: W];
 
-                // F_opt * conj(F_DD)
+                // Complex product: F_opt * conj(F_DD).
                 prod_re = (opt_re * dd_re) + (opt_im * dd_im);
                 prod_im = (opt_im * dd_re) - (opt_re * dd_im);
 
@@ -124,6 +138,10 @@ module frf_m_builder #(
     assign next_acc_re = acc_re + lane_sum_re;
     assign next_acc_im = acc_im + lane_sum_im;
 
+    // Scheduler:
+    //   nt_idx selects the transmit antenna row of M.
+    //   rf_idx selects the RF chain column of M.
+    //   s_base walks the stream reduction in MAC_LANES chunks.
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
             state     <= ST_IDLE;
@@ -159,6 +177,8 @@ module frf_m_builder #(
 
                 ST_RUN: begin
                     if (s_base + MAC_LANES[31:0] >= NS[31:0]) begin
+                        // Last stream chunk for this M element. Commit the
+                        // rounded result and advance to the next output element.
                         m_re_flat[((nt_idx * NRF) + rf_idx)*W +: W] <= sat_round(next_acc_re);
                         m_im_flat[((nt_idx * NRF) + rf_idx)*W +: W] <= sat_round(next_acc_im);
                         acc_re <= '0;
@@ -176,6 +196,7 @@ module frf_m_builder #(
                             end
                         end
                     end else begin
+                        // More stream terms remain for this M element.
                         acc_re <= next_acc_re;
                         acc_im <= next_acc_im;
                         s_base <= s_base + MAC_LANES[31:0];

@@ -7,6 +7,12 @@
 // pe_altmin_matrix_memory instantiates this primitive once for each local complex matrix.
 // The write port loads or updates a matrix element; the two read ports support simple functional datapath access.
 // This is a correctness-first memory model and is not yet a final banked high-throughput memory.
+//
+// Timing model:
+//   - Writes are synchronous to clk.
+//   - Reads are combinational for simple functional scheduling.
+//   - A production FPGA implementation may replace this with inferred or vendor
+//     block RAM and registered read data.
 // -----------------------------------------------------------------------------
 
 module complex_1w2r_ram #(
@@ -27,9 +33,12 @@ module complex_1w2r_ram #(
     output logic signed [W-1:0] rd1_im
 );
 
+    // Real and imaginary components are stored in parallel arrays so every
+    // logical address returns one complex sample.
     logic signed [W-1:0] mem_re [0:DEPTH-1];
     logic signed [W-1:0] mem_im [0:DEPTH-1];
 
+    // Single write port used by matrix loaders and computation stages.
     always_ff @(posedge clk) begin
         if (wr_en) begin
             mem_re[wr_addr] <= wr_re;
@@ -37,6 +46,8 @@ module complex_1w2r_ram #(
         end
     end
 
+    // Two read ports are enough for the current functional-first datapaths.
+    // Later banked memories can widen this access pattern for parallel lanes.
     assign rd0_re = mem_re[rd0_addr];
     assign rd0_im = mem_im[rd0_addr];
     assign rd1_re = mem_re[rd1_addr];

@@ -7,6 +7,11 @@
 // The top-level coefficient-update finite state machine starts this block first.
 // It consumes received sounding reference signal samples and produces the initial channel estimate for the DFT-MMSE estimator.
 // The current body is a functional placeholder that forwards input samples into the LS estimate registers.
+//
+// Interface notes:
+//   - start is a one-cycle pulse from hybrid_beamforming_arch_top.
+//   - done is asserted for one cycle when h_ls_* is valid.
+//   - Final LS arithmetic will replace the pass-through assignment.
 // -----------------------------------------------------------------------------
 
 module srs_ls_estimator #(
@@ -18,7 +23,18 @@ module srs_ls_estimator #(
     output logic done
 );
     always_ff @(posedge clk or posedge rst) begin
-        if (rst) begin done <= 1'b0; h_ls_re_flat <= 0; h_ls_im_flat <= 0; end
-        else begin done <= start; if (start) begin h_ls_re_flat <= y_re_flat; h_ls_im_flat <= y_im_flat; end end
+        if (rst) begin
+            done         <= 1'b0;
+            h_ls_re_flat <= 0;
+            h_ls_im_flat <= 0;
+        end else begin
+            // Baseline behavior captures the input observation directly so
+            // downstream estimator interfaces can be exercised.
+            done <= start;
+            if (start) begin
+                h_ls_re_flat <= y_re_flat;
+                h_ls_im_flat <= y_im_flat;
+            end
+        end
     end
 endmodule

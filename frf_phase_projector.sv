@@ -7,6 +7,11 @@
 // This block walks through the M matrix and dispatches entries to frf_phase_projector_lane instances.
 // Each lane maps one complex M entry into one unit-magnitude F_RF coefficient.
 // The completed F_RF output is captured by pe_altmin_frf_engine and used in the next iteration or returned to the top-level update path.
+//
+// Matrix layout:
+//   - M is flattened as NT rows by NRF columns.
+//   - F_RF uses the same NT by NRF layout.
+//   - CORDIC_LANES controls how many entries are projected per cycle.
 // -----------------------------------------------------------------------------
 
 module frf_phase_projector #(
@@ -46,6 +51,9 @@ module frf_phase_projector #(
     logic signed [W-1:0] lane_out_re [0:CORDIC_LANES-1];
     logic signed [W-1:0] lane_out_im [0:CORDIC_LANES-1];
 
+    // Instantiate one projection lane per parallel phase path. The current lane
+    // is an 8-sector approximation and can later be replaced by a true CORDIC or
+    // sine/cosine lookup implementation.
     genvar lane_g;
     generate
         for (lane_g = 0; lane_g < CORDIC_LANES; lane_g++) begin : gen_phase_lanes
@@ -61,6 +69,8 @@ module frf_phase_projector #(
         end
     endgenerate
 
+    // Feed each lane with the M entry selected by elem_base+lane. Out-of-range
+    // lanes are driven with zero during the final partial chunk.
     always @* begin
         for (int unsigned lane = 0; lane < CORDIC_LANES; lane++) begin
             logic [31:0] elem_idx;
@@ -77,6 +87,8 @@ module frf_phase_projector #(
         end
     end
 
+    // Scheduler writes projected lane results into the corresponding F_RF
+    // locations, then waits CORDIC_LAT cycles to model lane pipeline drain.
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
             state        <= ST_IDLE;
@@ -109,6 +121,8 @@ module frf_phase_projector #(
                         elem_idx = elem_base + lane[31:0];
 
                         if (elem_idx < ELEMENTS[31:0]) begin
+                            // Each lane output is already unit-magnitude in the
+                            // current fixed-point phase approximation.
                             f_rf_re_flat[elem_idx*W +: W] <= lane_out_re[lane];
                             f_rf_im_flat[elem_idx*W +: W] <= lane_out_im[lane];
                         end
